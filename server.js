@@ -1,4 +1,4 @@
-// backend/server.js - VERSION FINALE GRATUITE (liens recherche optimisés)
+// backend/server.js - VERSION GOOGLE SHOPPING PURE
 
 const express = require('express');
 const axios = require('axios');
@@ -14,62 +14,8 @@ app.use(express.json());
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: 'final-free' });
+  res.json({ status: 'ok', version: 'shopping-pure' });
 });
-
-function matchesQuery(title, query) {
-  if (!title || !query) return false;
-  const titleLower = title.toLowerCase();
-  const queryLower = query.toLowerCase();
-  const queryWords = queryLower.split(' ').filter(w => w.length > 2);
-  if (queryWords.length === 0) return true;
-  const matches = queryWords.filter(word => titleLower.includes(word));
-  return matches.length / queryWords.length >= 0.5;
-}
-
-function extractDomain(source) {
-  if (!source) return null;
-  const sourceLower = source.toLowerCase();
-  if (sourceLower.includes('amazon')) return 'amazon.fr';
-  if (sourceLower.includes('fnac')) return 'fnac.com';
-  if (sourceLower.includes('cdiscount')) return 'cdiscount.com';
-  if (sourceLower.includes('darty')) return 'darty.com';
-  if (sourceLower.includes('boulanger')) return 'boulanger.com';
-  if (sourceLower.includes('ldlc')) return 'ldlc.com';
-  if (sourceLower.includes('materiel')) return 'materiel.net';
-  if (sourceLower.includes('back market')) return 'backmarket.fr';
-  if (sourceLower.includes('backmarket')) return 'backmarket.fr';
-  if (sourceLower.includes('rakuten')) return 'rakuten.fr';
-  if (sourceLower.includes('auchan')) return 'auchan.fr';
-  if (sourceLower.includes('carrefour')) return 'carrefour.fr';
-  if (sourceLower.includes('electro')) return 'electrodepot.fr';
-  return null;
-}
-
-// Construire lien recherche marchand optimisé
-function buildSearchLink(query, domain) {
-  const cleanQuery = query
-    .replace(/\([^)]*\)/g, '') // Enlever (128 Go)
-    .replace(/-\s*[a-zA-Zéèêë]+\s*$/i, '') // Enlever - Noir
-    .replace(/\s+/g, '+')
-    .trim();
-
-  const links = {
-    'amazon.fr': `https://www.amazon.fr/s?k=${cleanQuery}`,
-    'fnac.com': `https://www.fnac.com/SearchResult/ResultList.aspx?Search=${cleanQuery}`,
-    'cdiscount.com': `https://www.cdiscount.com/search/10/${cleanQuery}.html`,
-    'darty.com': `https://www.darty.com/nav/recherche?text=${cleanQuery}`,
-    'boulanger.com': `https://www.boulanger.com/resultats?tr=${cleanQuery}`,
-    'ldlc.com': `https://www.ldlc.com/recherche/${cleanQuery}/`,
-    'materiel.net': `https://www.materiel.net/recherche/${cleanQuery}/`,
-    'backmarket.fr': `https://www.backmarket.fr/fr-fr/search?q=${cleanQuery}`,
-    'rakuten.fr': `https://fr.shopping.rakuten.com/search/${cleanQuery}`,
-    'carrefour.fr': `https://www.carrefour.fr/s?q=${cleanQuery}`,
-    'electrodepot.fr': `https://www.electrodepot.fr/catalogsearch/result/?q=${cleanQuery}`
-  };
-
-  return links[domain] || `https://www.google.fr/search?q=${cleanQuery}+${domain}`;
-}
 
 app.post('/api/compare', async (req, res) => {
   try {
@@ -81,7 +27,7 @@ app.post('/api/compare', async (req, res) => {
 
     console.log(`\n[API] Searching: "${query}"`);
 
-    // Google Shopping
+    // Google Shopping - AUCUNE modification
     const response = await axios.get('https://serpapi.com/search.json', {
       params: {
         engine: 'google_shopping',
@@ -91,68 +37,57 @@ app.post('/api/compare', async (req, res) => {
         gl: 'fr',
         google_domain: 'google.fr',
         api_key: SERPAPI_KEY,
-        num: 40
+        num: 30
       },
       timeout: 15000
     });
 
-    const products = response.data.shopping_results || [];
-    console.log(`[Shopping] ${products.length} products`);
+    const shoppingResults = response.data.shopping_results || [];
+    console.log(`[Shopping] ${shoppingResults.length} raw results`);
 
-    // Filtrer et parser
-    const results = products
-      .filter(p => matchesQuery(p.title, query))
-      .map(p => {
-        let price = p.extracted_price;
-        if (!price && p.price) {
-          const priceStr = p.price.replace(/[^\d.,]/g, '').replace(',', '.');
+    if (shoppingResults.length === 0) {
+      return res.json({ results: [], total: 0 });
+    }
+
+    // Formatter SANS filtrage (tout garder)
+    const formattedResults = shoppingResults
+      .map(item => {
+        // Prix - priorité extracted_price
+        let price = item.extracted_price;
+        if (!price && item.price) {
+          const priceStr = item.price.replace(/[^\d.,]/g, '').replace(',', '.');
           price = parseFloat(priceStr);
         }
 
-        const domain = extractDomain(p.source);
-        if (!domain || !price || price <= 0 || price > 15000) return null;
-
-        // Construire lien recherche optimisé
-        const searchLink = buildSearchLink(query, domain);
+        // Skip seulement si vraiment pas de prix
+        if (!price || isNaN(price) || price <= 0) {
+          return null;
+        }
 
         return {
-          title: p.title,
+          title: item.title || 'Produit',
           price: price,
-          source: p.source,
-          link: searchLink, // Lien recherche optimisé
-          image: p.thumbnail,
-          domain: domain
+          priceFormatted: `${price.toFixed(2).replace('.', ',')}€`,
+          source: item.source || 'Marchand',
+          link: item.product_link || item.link || '#', // TEL QUEL de Google
+          image: item.thumbnail || '',
+          rating: item.rating || null,
+          reviews: item.reviews || null
         };
       })
-      .filter(p => p !== null);
-
-    // Dédupliquer par marchand (garder le moins cher)
-    const byMerchant = new Map();
-    for (const item of results) {
-      if (!byMerchant.has(item.domain) || byMerchant.get(item.domain).price > item.price) {
-        byMerchant.set(item.domain, item);
-      }
-    }
-
-    const finalResults = Array.from(byMerchant.values())
+      .filter(item => item !== null)
       .sort((a, b) => a.price - b.price)
-      .slice(0, 10);
+      .slice(0, 10); // Max 10 résultats
 
-    console.log(`[API] ${finalResults.length} merchants:`);
-    finalResults.forEach((r, i) => {
+    console.log(`[API] ${formattedResults.length} results:`);
+    formattedResults.forEach((r, i) => {
       console.log(`  ${i+1}. ${r.source} - ${r.price}€`);
     });
 
-    const formatted = finalResults.map(r => ({
-      title: r.title,
-      price: r.price,
-      priceFormatted: `${r.price.toFixed(2).replace('.', ',')}€`,
-      source: r.source,
-      link: r.link,
-      image: r.image || ''
-    }));
-
-    res.json({ results: formatted, total: formatted.length });
+    res.json({ 
+      results: formattedResults,
+      total: formattedResults.length 
+    });
 
   } catch (error) {
     console.error('[API] Error:', error.message);
@@ -161,8 +96,8 @@ app.post('/api/compare', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ PriceWatch Backend FINAL FREE on port ${PORT}`);
-  console.log(`🛍️ SerpAPI Shopping + Smart search links`);
+  console.log(`✅ PriceWatch Backend PURE on port ${PORT}`);
+  console.log(`🛍️ Google Shopping - Raw data (no filtering)`);
 });
 
 module.exports = app;
