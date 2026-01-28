@@ -1,7 +1,8 @@
-// backend/server.js - VERSION FINALE avec filtrage marchands
+// backend/server.js - VERSION FINALE avec extraction vrais liens
 
 const express = require('express');
 const axios = require('axios');
+const cheerio = require('cheerio');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -14,7 +15,7 @@ app.use(express.json());
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: 'final' });
+  res.json({ status: 'ok', version: 'final-extract-links' });
 });
 
 // Marchands français de confiance
@@ -53,6 +54,71 @@ function extractDomain(source) {
   return null;
 }
 
+// Extraire le vrai lien depuis une page Google Shopping
+async function extractRealLink(googleUrl) {
+  try {
+    console.log('[Extract] Fetching Google page...');
+    
+    const response = await axios.get(googleUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      timeout: 10000
+    });
+
+    const $ = cheerio.load(response.data);
+    
+    // Chercher les liens dans la page
+    // Pattern 1: Lien "Voir l'offre" ou "Visit site"
+    let realLink = null;
+    
+    // Chercher dans les attributs href
+    $('a[href]').each((i, elem) => {
+      const href = $(elem).attr('href');
+      
+      // Skip liens Google
+      if (href.includes('google.com') || href.includes('google.fr')) {
+        return;
+      }
+      
+      // Chercher liens vers marchands
+      if (href.startsWith('http') && 
+          (href.includes('amazon') || href.includes('fnac') || 
+           href.includes('cdiscount') || href.includes('darty') ||
+           href.includes('boulanger') || href.includes('ldlc'))) {
+        realLink = href;
+        return false; // break
+      }
+    });
+
+    // Pattern 2: Chercher dans le JavaScript/JSON de la page
+    if (!realLink) {
+      const pageText = response.data;
+      
+      // Regex pour trouver des URLs
+      const urlPattern = /https?:\/\/(www\.)?(amazon|fnac|cdiscount|darty|boulanger|ldlc|materiel|backmarket|rakuten)[\w\-\.\/\?=&%]+/g;
+      const matches = pageText.match(urlPattern);
+      
+      if (matches && matches.length > 0) {
+        // Prendre la première URL trouvée
+        realLink = matches[0];
+      }
+    }
+
+    if (realLink) {
+      console.log(`[Extract] ✅ Found: ${realLink.substring(0, 80)}...`);
+      return realLink;
+    }
+
+    console.log('[Extract] ⚠️ No real link found, keeping Google URL');
+    return googleUrl;
+
+  } catch (error) {
+    console.error('[Extract] Error:', error.message);
+    return googleUrl; // Fallback sur lien Google
+  }
+}
+
 app.post('/api/compare', async (req, res) => {
   try {
     const { query } = req.body;
@@ -85,15 +151,13 @@ app.post('/api/compare', async (req, res) => {
       return res.json({ results: [], total: 0 });
     }
 
-    // Filtrer et formatter
+    // Filtrer
     const filteredResults = shoppingResults
       .map(item => {
-        // Vérifier marchand de confiance
         if (!isTrustedMerchant(item.source)) {
           return null;
         }
 
-        // Prix
         let price = item.extracted_price;
         if (!price && item.price) {
           const priceStr = item.price.replace(/[^\d.,]/g, '').replace(',', '.');
@@ -111,7 +175,7 @@ app.post('/api/compare', async (req, res) => {
           price: price,
           priceFormatted: `${price.toFixed(2).replace('.', ',')}€`,
           source: item.source,
-          link: item.product_link || item.link || '#',
+          googleLink: item.product_link || item.link,
           image: item.thumbnail || '',
           rating: item.rating || null,
           reviews: item.reviews || null,
@@ -120,7 +184,7 @@ app.post('/api/compare', async (req, res) => {
       })
       .filter(item => item !== null);
 
-    // Dédupliquer par marchand (garder le moins cher)
+    // Dédupliquer
     const byMerchant = new Map();
     for (const item of filteredResults) {
       const key = item.domain || item.source;
@@ -129,14 +193,30 @@ app.post('/api/compare', async (req, res) => {
       }
     }
 
-    // Trier par prix et limiter
-    const finalResults = Array.from(byMerchant.values())
+    const uniqueResults = Array.from(byMerchant.values())
       .sort((a, b) => a.price - b.price)
       .slice(0, 10);
 
-    console.log(`[API] ${finalResults.length} trusted merchants:`);
+    console.log(`[API] Extracting real links for ${uniqueResults.length} results...`);
+
+    // Extraire les vrais liens en parallèle (max 3 à la fois pour ne pas surcharger)
+    const extractPromises = uniqueResults.map(async (item, index) => {
+      // Attendre un peu entre chaque requête
+      await new Promise(resolve => setTimeout(resolve, index * 500));
+      
+      const realLink = await extractRealLink(item.googleLink);
+      return {
+        ...item,
+        link: realLink
+      };
+    });
+
+    const finalResults = await Promise.all(extractPromises);
+
+    console.log(`[API] ${finalResults.length} results with extracted links:`);
     finalResults.forEach((r, i) => {
-      console.log(`  ${i+1}. ${r.source} - ${r.price}€`);
+      const linkType = r.link.includes('google') ? '⚠️ Google' : '✅ Direct';
+      console.log(`  ${i+1}. ${r.source} - ${r.price}€ - ${linkType}`);
     });
 
     res.json({ 
@@ -152,7 +232,7 @@ app.post('/api/compare', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ PriceWatch Backend FINAL on port ${PORT}`);
-  console.log(`🛍️ Google Shopping + Trusted French merchants`);
+  console.log(`🔗 Extracting real merchant links from Google pages`);
 });
 
 module.exports = app;
