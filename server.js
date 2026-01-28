@@ -1,4 +1,4 @@
-// backend/server.js - VERSION FINALE avec vrais liens
+// backend/server.js - VERSION FINALE GRATUITE (liens recherche optimisés)
 
 const express = require('express');
 const axios = require('axios');
@@ -14,7 +14,7 @@ app.use(express.json());
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: 'final-stores' });
+  res.json({ status: 'ok', version: 'final-free' });
 });
 
 function matchesQuery(title, query) {
@@ -27,49 +27,48 @@ function matchesQuery(title, query) {
   return matches.length / queryWords.length >= 0.5;
 }
 
-function extractDomain(name) {
-  if (!name) return null;
-  const nameLower = name.toLowerCase();
-  if (nameLower.includes('amazon')) return 'amazon.fr';
-  if (nameLower.includes('fnac')) return 'fnac.com';
-  if (nameLower.includes('cdiscount')) return 'cdiscount.com';
-  if (nameLower.includes('darty')) return 'darty.com';
-  if (nameLower.includes('boulanger')) return 'boulanger.com';
-  if (nameLower.includes('ldlc')) return 'ldlc.com';
-  if (nameLower.includes('materiel')) return 'materiel.net';
-  if (nameLower.includes('back market')) return 'backmarket.fr';
-  if (nameLower.includes('backmarket')) return 'backmarket.fr';
-  if (nameLower.includes('rakuten')) return 'rakuten.fr';
-  if (nameLower.includes('auchan')) return 'auchan.fr';
-  if (nameLower.includes('carrefour')) return 'carrefour.fr';
-  if (nameLower.includes('electro')) return 'electrodepot.fr';
+function extractDomain(source) {
+  if (!source) return null;
+  const sourceLower = source.toLowerCase();
+  if (sourceLower.includes('amazon')) return 'amazon.fr';
+  if (sourceLower.includes('fnac')) return 'fnac.com';
+  if (sourceLower.includes('cdiscount')) return 'cdiscount.com';
+  if (sourceLower.includes('darty')) return 'darty.com';
+  if (sourceLower.includes('boulanger')) return 'boulanger.com';
+  if (sourceLower.includes('ldlc')) return 'ldlc.com';
+  if (sourceLower.includes('materiel')) return 'materiel.net';
+  if (sourceLower.includes('back market')) return 'backmarket.fr';
+  if (sourceLower.includes('backmarket')) return 'backmarket.fr';
+  if (sourceLower.includes('rakuten')) return 'rakuten.fr';
+  if (sourceLower.includes('auchan')) return 'auchan.fr';
+  if (sourceLower.includes('carrefour')) return 'carrefour.fr';
+  if (sourceLower.includes('electro')) return 'electrodepot.fr';
   return null;
 }
 
-// Extraire les VRAIS liens via Immersive Product API
-async function getRealLinks(immersiveApiUrl) {
-  try {
-    console.log('[Immersive] Fetching...');
-    
-    const response = await axios.get(immersiveApiUrl, { timeout: 10000 });
-    const data = response.data;
-    
-    // Les vrais liens sont dans product_results.stores
-    const stores = data.product_results?.stores || [];
-    console.log(`[Immersive] Found ${stores.length} stores`);
-    
-    return stores.map(store => ({
-      name: store.name,
-      price: store.extracted_price || store.extracted_total,
-      link: store.link, // VRAI lien marchand !
-      rating: store.rating,
-      title: store.title
-    }));
-    
-  } catch (error) {
-    console.error('[Immersive] Error:', error.response?.status, error.message);
-    return [];
-  }
+// Construire lien recherche marchand optimisé
+function buildSearchLink(query, domain) {
+  const cleanQuery = query
+    .replace(/\([^)]*\)/g, '') // Enlever (128 Go)
+    .replace(/-\s*[a-zA-Zéèêë]+\s*$/i, '') // Enlever - Noir
+    .replace(/\s+/g, '+')
+    .trim();
+
+  const links = {
+    'amazon.fr': `https://www.amazon.fr/s?k=${cleanQuery}`,
+    'fnac.com': `https://www.fnac.com/SearchResult/ResultList.aspx?Search=${cleanQuery}`,
+    'cdiscount.com': `https://www.cdiscount.com/search/10/${cleanQuery}.html`,
+    'darty.com': `https://www.darty.com/nav/recherche?text=${cleanQuery}`,
+    'boulanger.com': `https://www.boulanger.com/resultats?tr=${cleanQuery}`,
+    'ldlc.com': `https://www.ldlc.com/recherche/${cleanQuery}/`,
+    'materiel.net': `https://www.materiel.net/recherche/${cleanQuery}/`,
+    'backmarket.fr': `https://www.backmarket.fr/fr-fr/search?q=${cleanQuery}`,
+    'rakuten.fr': `https://fr.shopping.rakuten.com/search/${cleanQuery}`,
+    'carrefour.fr': `https://www.carrefour.fr/s?q=${cleanQuery}`,
+    'electrodepot.fr': `https://www.electrodepot.fr/catalogsearch/result/?q=${cleanQuery}`
+  };
+
+  return links[domain] || `https://www.google.fr/search?q=${cleanQuery}+${domain}`;
 }
 
 app.post('/api/compare', async (req, res) => {
@@ -82,7 +81,7 @@ app.post('/api/compare', async (req, res) => {
 
     console.log(`\n[API] Searching: "${query}"`);
 
-    // 1. Google Shopping
+    // Google Shopping
     const response = await axios.get('https://serpapi.com/search.json', {
       params: {
         engine: 'google_shopping',
@@ -92,7 +91,7 @@ app.post('/api/compare', async (req, res) => {
         gl: 'fr',
         google_domain: 'google.fr',
         api_key: SERPAPI_KEY,
-        num: 10
+        num: 40
       },
       timeout: 15000
     });
@@ -100,56 +99,34 @@ app.post('/api/compare', async (req, res) => {
     const products = response.data.shopping_results || [];
     console.log(`[Shopping] ${products.length} products`);
 
-    if (products.length === 0) {
-      return res.json({ results: [], total: 0 });
-    }
+    // Filtrer et parser
+    const results = products
+      .filter(p => matchesQuery(p.title, query))
+      .map(p => {
+        let price = p.extracted_price;
+        if (!price && p.price) {
+          const priceStr = p.price.replace(/[^\d.,]/g, '').replace(',', '.');
+          price = parseFloat(priceStr);
+        }
 
-    // 2. Premier produit pertinent
-    const relevantProduct = products.find(p => matchesQuery(p.title, query));
-    
-    if (!relevantProduct) {
-      console.log('[API] No relevant product');
-      return res.json({ results: [], total: 0 });
-    }
+        const domain = extractDomain(p.source);
+        if (!domain || !price || price <= 0 || price > 15000) return null;
 
-    console.log(`[API] Found: ${relevantProduct.title}`);
-
-    // 3. Extraire vrais liens
-    const immersiveUrl = relevantProduct.serpapi_immersive_product_api;
-    
-    if (!immersiveUrl) {
-      console.log('[API] No immersive API URL');
-      return res.json({ results: [], total: 0 });
-    }
-
-    const stores = await getRealLinks(immersiveUrl);
-    
-    if (stores.length === 0) {
-      console.log('[API] No stores found');
-      return res.json({ results: [], total: 0 });
-    }
-
-    // 4. Filtrer marchands français
-    const results = stores
-      .map(store => {
-        const domain = extractDomain(store.name);
-        if (!domain) return null;
-
-        const price = store.price;
-        if (!price || price <= 0 || price > 15000) return null;
+        // Construire lien recherche optimisé
+        const searchLink = buildSearchLink(query, domain);
 
         return {
-          title: store.title || relevantProduct.title,
+          title: p.title,
           price: price,
-          source: store.name,
-          link: store.link, // VRAI lien !
-          image: relevantProduct.thumbnail,
+          source: p.source,
+          link: searchLink, // Lien recherche optimisé
+          image: p.thumbnail,
           domain: domain
         };
       })
-      .filter(r => r !== null);
+      .filter(p => p !== null);
 
-    // 5. Dédupliquer
+    // Dédupliquer par marchand (garder le moins cher)
     const byMerchant = new Map();
     for (const item of results) {
       if (!byMerchant.has(item.domain) || byMerchant.get(item.domain).price > item.price) {
@@ -161,10 +138,9 @@ app.post('/api/compare', async (req, res) => {
       .sort((a, b) => a.price - b.price)
       .slice(0, 10);
 
-    console.log(`[API] ${finalResults.length} merchants with REAL links:`);
+    console.log(`[API] ${finalResults.length} merchants:`);
     finalResults.forEach((r, i) => {
       console.log(`  ${i+1}. ${r.source} - ${r.price}€`);
-      console.log(`     ${r.link.substring(0, 70)}...`);
     });
 
     const formatted = finalResults.map(r => ({
@@ -185,8 +161,8 @@ app.post('/api/compare', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ PriceWatch Backend FINAL on port ${PORT}`);
-  console.log(`🛍️ SerpAPI Immersive Product (stores with real links)`);
+  console.log(`✅ PriceWatch Backend FINAL FREE on port ${PORT}`);
+  console.log(`🛍️ SerpAPI Shopping + Smart search links`);
 });
 
 module.exports = app;
