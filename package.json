@@ -1,6 +1,6 @@
 {
   "name": "pricewatch-backend",
-  "version": "3.4.0",
+  "version": "3.2.0",
   "description": "PriceWatch backend with RapidAPI",
   "main": "server.js",
   "scripts": {
