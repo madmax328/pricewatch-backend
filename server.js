@@ -1,4 +1,4 @@
-// backend/server.js - VERSION FINALE (SerpAPI Shopping)
+// backend/server.js - VERSION FINALE (avec logs détaillés)
 
 const express = require('express');
 const axios = require('axios');
@@ -14,7 +14,7 @@ app.use(express.json());
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: 'final-serpapi' });
+  res.json({ status: 'ok', version: 'final-debug' });
 });
 
 // Vérifier pertinence
@@ -24,11 +24,13 @@ function matchesQuery(title, query) {
   const queryLower = query.toLowerCase();
   const queryWords = queryLower.split(' ').filter(w => w.length > 2);
   const matches = queryWords.filter(word => titleLower.includes(word));
-  return matches.length / queryWords.length >= 0.7;
+  const ratio = matches.length / queryWords.length;
+  return ratio >= 0.6; // Baissé à 60%
 }
 
 // Extraire domaine
 function extractDomain(source) {
+  if (!source) return null;
   const sourceLower = source.toLowerCase();
   if (sourceLower.includes('amazon')) return 'amazon.fr';
   if (sourceLower.includes('fnac')) return 'fnac.com';
@@ -38,7 +40,10 @@ function extractDomain(source) {
   if (sourceLower.includes('ldlc')) return 'ldlc.com';
   if (sourceLower.includes('materiel')) return 'materiel.net';
   if (sourceLower.includes('back market')) return 'backmarket.fr';
+  if (sourceLower.includes('backmarket')) return 'backmarket.fr';
   if (sourceLower.includes('rakuten')) return 'rakuten.fr';
+  if (sourceLower.includes('auchan')) return 'auchan.fr';
+  if (sourceLower.includes('carrefour')) return 'carrefour.fr';
   return null;
 }
 
@@ -70,10 +75,36 @@ app.post('/api/compare', async (req, res) => {
     const products = response.data.shopping_results || [];
     console.log(`[SerpAPI] Found ${products.length} products`);
 
+    if (products.length > 0) {
+      console.log('[DEBUG] Sample product:', JSON.stringify(products[0], null, 2));
+    }
+
     // Filtrer et parser
+    let processedCount = 0;
+    let matchedCount = 0;
+    let domainCount = 0;
+    let priceCount = 0;
+    
     const results = products
-      .filter(p => matchesQuery(p.title, query))
-      .map(p => {
+      .map((p, i) => {
+        processedCount++;
+        
+        // Log premier produit en détail
+        if (i === 0) {
+          console.log(`[DEBUG] Processing product 1:`);
+          console.log(`  - title: ${p.title}`);
+          console.log(`  - source: ${p.source}`);
+          console.log(`  - extracted_price: ${p.extracted_price}`);
+          console.log(`  - price: ${p.price}`);
+        }
+
+        // Vérifier match
+        if (!matchesQuery(p.title, query)) {
+          if (i < 3) console.log(`[FILTER] ❌ Product ${i+1}: No match - "${p.title.substring(0, 50)}..."`);
+          return null;
+        }
+        matchedCount++;
+
         // Prix
         let price = p.extracted_price;
         if (!price && p.price) {
@@ -81,8 +112,23 @@ app.post('/api/compare', async (req, res) => {
           price = parseFloat(priceStr);
         }
 
+        if (!price || isNaN(price) || price <= 0 || price > 15000) {
+          if (i < 3) console.log(`[FILTER] ❌ Product ${i+1}: Invalid price - ${price}`);
+          return null;
+        }
+        priceCount++;
+
+        // Domain
         const domain = extractDomain(p.source);
-        if (!domain) return null;
+        if (!domain) {
+          if (i < 3) console.log(`[FILTER] ❌ Product ${i+1}: Unknown merchant - ${p.source}`);
+          return null;
+        }
+        domainCount++;
+
+        if (i < 3) {
+          console.log(`[FILTER] ✅ Product ${i+1}: ${p.source} - ${price}€`);
+        }
 
         return {
           title: p.title,
@@ -93,9 +139,16 @@ app.post('/api/compare', async (req, res) => {
           domain: domain
         };
       })
-      .filter(p => p !== null && p.price > 0 && p.price < 15000);
+      .filter(p => p !== null);
 
-    // Dédupliquer par marchand (garder le moins cher)
+    console.log(`[FILTER] Stats:`);
+    console.log(`  - Processed: ${processedCount}`);
+    console.log(`  - Matched query: ${matchedCount}`);
+    console.log(`  - Valid price: ${priceCount}`);
+    console.log(`  - Known merchant: ${domainCount}`);
+    console.log(`  - Final results: ${results.length}`);
+
+    // Dédupliquer par marchand
     const byMerchant = new Map();
     for (const item of results) {
       const key = item.domain;
@@ -109,7 +162,7 @@ app.post('/api/compare', async (req, res) => {
       .sort((a, b) => a.price - b.price)
       .slice(0, 10);
 
-    console.log(`[API] Returning ${finalResults.length} unique merchants:`);
+    console.log(`[API] Returning ${finalResults.length} unique merchants`);
 
     // Formater
     const formatted = finalResults.map((r, i) => {
@@ -142,8 +195,8 @@ app.post('/api/compare', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ PriceWatch Backend FINAL on port ${PORT}`);
-  console.log(`🛍️ SerpAPI Google Shopping (multi-merchant)`);
+  console.log(`✅ PriceWatch Backend FINAL DEBUG on port ${PORT}`);
+  console.log(`🛍️ SerpAPI Google Shopping (with detailed logs)`);
   console.log(`🔑 SerpAPI Key: ${SERPAPI_KEY ? 'YES' : 'NO'}`);
 });
 
