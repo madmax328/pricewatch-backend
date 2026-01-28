@@ -1,4 +1,4 @@
-// backend/server.js - VERSION FINALE (seuil 50%)
+// backend/server.js - FINAL avec extraction vrais liens
 
 const express = require('express');
 const axios = require('axios');
@@ -14,10 +14,9 @@ app.use(express.json());
 const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: 'final' });
+  res.json({ status: 'ok', version: 'final-real-links' });
 });
 
-// Vérifier pertinence (seuil 50%)
 function matchesQuery(title, query) {
   if (!title || !query) return false;
   const titleLower = title.toLowerCase();
@@ -25,10 +24,9 @@ function matchesQuery(title, query) {
   const queryWords = queryLower.split(' ').filter(w => w.length > 2);
   if (queryWords.length === 0) return true;
   const matches = queryWords.filter(word => titleLower.includes(word));
-  return matches.length / queryWords.length >= 0.5; // 50%
+  return matches.length / queryWords.length >= 0.5;
 }
 
-// Extraire domaine
 function extractDomain(source) {
   if (!source) return null;
   const sourceLower = source.toLowerCase();
@@ -48,6 +46,31 @@ function extractDomain(source) {
   return null;
 }
 
+// Extraire les VRAIS liens via Immersive Product API
+async function getRealLinks(immersiveApiUrl) {
+  try {
+    console.log('[Immersive] Fetching real links...');
+    
+    const response = await axios.get(immersiveApiUrl, { timeout: 10000 });
+    const data = response.data;
+    
+    // Les vrais liens sont dans online_sellers
+    const sellers = data.online_sellers || [];
+    console.log(`[Immersive] Found ${sellers.length} sellers with real links`);
+    
+    return sellers.map(seller => ({
+      name: seller.name,
+      price: seller.extracted_price || seller.price,
+      link: seller.link, // VRAI lien marchand !
+      rating: seller.rating
+    }));
+    
+  } catch (error) {
+    console.error('[Immersive] Error:', error.message);
+    return [];
+  }
+}
+
 app.post('/api/compare', async (req, res) => {
   try {
     const { query } = req.body;
@@ -58,7 +81,7 @@ app.post('/api/compare', async (req, res) => {
 
     console.log(`\n[API] Searching: "${query}"`);
 
-    // Google Shopping via SerpAPI
+    // 1. Google Shopping pour trouver le produit
     const response = await axios.get('https://serpapi.com/search.json', {
       params: {
         engine: 'google_shopping',
@@ -68,39 +91,69 @@ app.post('/api/compare', async (req, res) => {
         gl: 'fr',
         google_domain: 'google.fr',
         api_key: SERPAPI_KEY,
-        num: 40
+        num: 10 // On prend moins car on va appeler l'API immersive
       },
       timeout: 15000
     });
 
     const products = response.data.shopping_results || [];
-    console.log(`[SerpAPI] ${products.length} products`);
+    console.log(`[Shopping] ${products.length} products`);
 
-    // Filtrer et parser
-    const results = products
-      .filter(p => matchesQuery(p.title, query))
-      .map(p => {
-        let price = p.extracted_price;
-        if (!price && p.price) {
-          const priceStr = p.price.replace(/[^\d.,]/g, '').replace(',', '.');
-          price = parseFloat(priceStr);
+    if (products.length === 0) {
+      return res.json({ results: [], total: 0 });
+    }
+
+    // 2. Prendre le premier produit pertinent
+    const relevantProduct = products.find(p => matchesQuery(p.title, query));
+    
+    if (!relevantProduct) {
+      console.log('[API] No relevant product found');
+      return res.json({ results: [], total: 0 });
+    }
+
+    console.log(`[API] Found: ${relevantProduct.title}`);
+    console.log(`[API] Extracting real links...`);
+
+    // 3. Extraire les vrais liens via Immersive Product API
+    const immersiveUrl = relevantProduct.serpapi_immersive_product_api;
+    
+    if (!immersiveUrl) {
+      console.log('[API] No immersive API available');
+      return res.json({ results: [], total: 0 });
+    }
+
+    const sellers = await getRealLinks(immersiveUrl);
+    
+    if (sellers.length === 0) {
+      console.log('[API] No sellers found');
+      return res.json({ results: [], total: 0 });
+    }
+
+    // 4. Filtrer marchands connus
+    const results = sellers
+      .map(seller => {
+        const domain = extractDomain(seller.name);
+        if (!domain) return null;
+
+        let price = seller.price;
+        if (typeof price === 'string') {
+          price = parseFloat(price.replace(/[^\d.,]/g, '').replace(',', '.'));
         }
-
-        const domain = extractDomain(p.source);
-        if (!domain || !price || price <= 0 || price > 15000) return null;
+        
+        if (!price || price <= 0 || price > 15000) return null;
 
         return {
-          title: p.title,
+          title: relevantProduct.title,
           price: price,
-          source: p.source,
-          link: p.product_link || p.link,
-          image: p.thumbnail,
+          source: seller.name,
+          link: seller.link, // VRAI lien marchand !
+          image: relevantProduct.thumbnail,
           domain: domain
         };
       })
-      .filter(p => p !== null);
+      .filter(r => r !== null);
 
-    // Dédupliquer par marchand
+    // 5. Dédupliquer et trier
     const byMerchant = new Map();
     for (const item of results) {
       if (!byMerchant.has(item.domain) || byMerchant.get(item.domain).price > item.price) {
@@ -112,8 +165,11 @@ app.post('/api/compare', async (req, res) => {
       .sort((a, b) => a.price - b.price)
       .slice(0, 10);
 
-    console.log(`[API] ${finalResults.length} merchants:`);
-    finalResults.forEach((r, i) => console.log(`  ${i+1}. ${r.source} - ${r.price}€`));
+    console.log(`[API] ${finalResults.length} merchants with REAL links:`);
+    finalResults.forEach((r, i) => {
+      console.log(`  ${i+1}. ${r.source} - ${r.price}€`);
+      console.log(`     → ${r.link.substring(0, 80)}...`);
+    });
 
     const formatted = finalResults.map(r => ({
       title: r.title,
@@ -134,7 +190,7 @@ app.post('/api/compare', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ PriceWatch Backend FINAL on port ${PORT}`);
-  console.log(`🛍️ SerpAPI Shopping (50% match threshold)`);
+  console.log(`🛍️ SerpAPI with Immersive Product (real merchant links)`);
 });
 
 module.exports = app;
