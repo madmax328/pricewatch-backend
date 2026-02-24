@@ -1,7 +1,7 @@
 {
-  "name": "pricewatch-backend",
-  "version": "3.2.0",
-  "description": "PriceWatch backend with RapidAPI",
+  "name": "savetide-backend",
+  "version": "4.0",
+  "description": "SaveTide backend with SerpAPI",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"

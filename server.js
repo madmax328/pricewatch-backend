@@ -151,7 +151,7 @@ app.post('/api/compare', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ PriceWatch Backend FINAL on port ${PORT}`);
+  console.log(`✅ SaveTide Backend FINAL on port ${PORT}`);
   console.log(`🛍️ Google Shopping + Trusted French merchants`);
 });
 
